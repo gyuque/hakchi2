@@ -248,12 +248,12 @@ namespace com.clusterrr.hakchi_gui
             throw new Exception(".sfrom file not found");
         }
 
-
+        // New version of SnesRomHeader backported from 2.21c
         [StructLayout(LayoutKind.Sequential)]
         private struct SnesRomHeader
         {
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 21)]
-            public string GameTitle;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 21)]
+            public byte[] GameTitleArr;
             [MarshalAs(UnmanagedType.U1)] // $xFD5
             public byte RomMakeup;
             [MarshalAs(UnmanagedType.U1)] // $xFD6
@@ -262,14 +262,48 @@ namespace com.clusterrr.hakchi_gui
             public byte RomSize;
             [MarshalAs(UnmanagedType.U1)] // $xFD8
             public byte SramSize;
-            [MarshalAs(UnmanagedType.U2)] // $xFD9
-            public ushort LicenseId;
+            [MarshalAs(UnmanagedType.U1)] // $xFD9
+            public byte Country;
+            [MarshalAs(UnmanagedType.U1)] // $xFDA
+            public byte License;
             [MarshalAs(UnmanagedType.U1)] // $xFDB
             public byte Version;
             [MarshalAs(UnmanagedType.U2)] // $xFDC
             public ushort ChecksumComplement;
             [MarshalAs(UnmanagedType.U2)] // $xFDE
             public ushort Checksum;
+
+            public string GameTitle
+            {
+                get
+                {
+                    var data = new List<byte>(GameTitleArr);
+                    if (data.Contains(0))
+                        return "";
+                    if (data.Contains(0xFF))
+                        return "";
+                    if (data[0] == 0x20)
+                        return "";
+                    while (data.Count > 0 && data[data.Count - 1] == 0x20)
+                        data.RemoveAt(data.Count - 1);
+
+                    // Replace Japanese letters
+                    replaceKanaLetters(ref data);
+
+                    return Encoding.ASCII.GetString(data.ToArray());
+                }
+            }
+
+            public static void replaceKanaLetters(ref List<byte> data)
+            {
+                for (int i = 0; i < data.Count; ++i)
+                {
+                    if (data[i] >= 0xA0 && data[i] <= 0xDF)
+                    {
+                        data[i] = (byte)'_';
+                    }
+                }
+            }
 
             public byte[] GetBytes()
             {
@@ -293,7 +327,6 @@ namespace com.clusterrr.hakchi_gui
                 return r;
             }
         }
-
 
         [StructLayout(LayoutKind.Sequential)]
         public struct SfromHeader1

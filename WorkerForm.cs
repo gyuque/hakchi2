@@ -19,7 +19,7 @@ namespace com.clusterrr.hakchi_gui
 {
     public partial class WorkerForm : Form
     {
-        public enum Tasks { DumpKernel, FlashKernel, DumpNand, FlashNand, DumpNandB, Memboot, UploadGames, DownloadCovers, AddGames, CompressGames, DecompressGames, DeleteGames };
+        public enum Tasks { DumpKernel, FlashKernel, DumpNand, FlashNand, DumpNandB, DumpNandC, FlashNandC, Memboot, UploadGames, DownloadCovers, AddGames, CompressGames, DecompressGames, DeleteGames };
         public Tasks Task;
         //public string UBootDump;
         public static string KernelDumpPath
@@ -287,7 +287,9 @@ namespace com.clusterrr.hakchi_gui
                         DoNandFlash();
                         break;
                     case Tasks.DumpNandB:
-                        DoNandBDump();
+                    case Tasks.DumpNandC:
+                    case Tasks.FlashNandC:
+                        DoPartitionDump(Task);
                         break;
                     case Tasks.UploadGames:
                         UploadGames();
@@ -693,10 +695,10 @@ namespace com.clusterrr.hakchi_gui
             SetProgress(maxProgress, maxProgress);
         }
 
-        public void DoNandBDump()
+        public void DoPartitionDump(Tasks task)
         {
             int progress = 0;
-            int maxProgress = 30;
+            int maxProgress = 500;
             var clovershell = MainForm.Clovershell;
             try
             {
@@ -710,20 +712,55 @@ namespace com.clusterrr.hakchi_gui
 
                 ShowSplashScreen();
 
-                var nandbSize = int.Parse(clovershell.ExecuteSimple("df / | tail -n 1 | awk '{ print $2 }'"));
-                maxProgress = 5 + nandbSize / 1024;
+                var partitionSize = 0;
+                switch (task)
+                {
+                    case Tasks.DumpNandB:
+                        partitionSize = int.Parse(clovershell.ExecuteSimple("df /dev/mapper/root-crypt | tail -n 1 | awk '{ print $2 }'"));
+                        break;
+                    case Tasks.DumpNandC:
+                    case Tasks.FlashNandC:
+                        partitionSize = int.Parse(clovershell.ExecuteSimple("df /dev/nandc | tail -n 1 | awk '{ print $2 }'"));
+                        break;
+                }
+                maxProgress = 5 + (int)Math.Ceiling(partitionSize / 1024.0 * 1.05);
                 SetProgress(progress, maxProgress);
 
-                SetStatus(Resources.DumpingNand);
-                using (var file = new TrackableFileStream(NandDump, FileMode.Create))
+                if (task != Tasks.FlashNandC)
                 {
-                    file.OnProgress += delegate (long Position, long Length)
+                    SetStatus(Resources.DumpingNand);
+                    using (var file = new TrackableFileStream(NandDump, FileMode.Create))
                     {
-                        progress = (int)(5 + Position / 1024);
-                        SetProgress(progress, maxProgress);
-                    };
-                    clovershell.Execute("dd if=/dev/mapper/root-crypt", null, file);
-                    file.Close();
+                        file.OnProgress += delegate (long Position, long Length)
+                        {
+                            progress = (int)(5 + Position / 1024 / 1024);
+                            SetProgress(progress, maxProgress);
+                        };
+                        switch (task)
+                        {
+                            case Tasks.DumpNandB:
+                                clovershell.Execute("dd if=/dev/mapper/root-crypt", null, file);
+                                break;
+                            case Tasks.DumpNandC:
+                                clovershell.Execute("dd if=/dev/nandc", null, file);
+                                break;
+                        }
+                        file.Close();
+                    }
+                }
+                else
+                {
+                    SetStatus(Resources.FlashingNand);
+                    using (var file = new TrackableFileStream(NandDump, FileMode.Open))
+                    {
+                        file.OnProgress += delegate (long Position, long Length)
+                        {
+                            progress = (int)(5 + Position / 1024 / 1024);
+                            SetProgress(progress, maxProgress);
+                        };
+                        clovershell.Execute("dd of=/dev/nandc", file);
+                        file.Close();
+                    }
                 }
 
                 SetStatus(Resources.Done);
@@ -966,6 +1003,7 @@ namespace com.clusterrr.hakchi_gui
         public static void SyncConfig(Dictionary<string, string> Config, bool reboot = false)
         {
             var clovershell = MainForm.Clovershell;
+            const string configPath = "/etc/preinit.d/p0000_config";
 
             // Writing config
             var config = new MemoryStream();
@@ -977,8 +1015,7 @@ namespace com.clusterrr.hakchi_gui
                     config.Write(data, 0, data.Length);
                 }
             }
-            clovershell.Execute("cat > /tmp/config", config, null, null, 1000, true);
-            clovershell.Execute("temppath=/tmp ; source /etc/preinit ; script_init ; source /tmp/config ; source $preinit.d/pffff_config", null, null, null, 5000, true);
+            clovershell.Execute($"cat >> {configPath}", config, null, null, 3000, true);
             config.Dispose();
             if (reboot)
             {
